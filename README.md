@@ -1,6 +1,6 @@
-# Dataset_ROS_Dev2 (Data Collection WS)
+# Dataset_ROS_Dev2 (Data Collection ROS2 node)
 
-這是專為採集「毫米波雷達」與「相機影像」同步資料所建立的輕量級 ROS2 WS。
+這是專為穿透實驗資料收集同步資料所建立的ROS2 node。
 適用於 x86 PC 主機、NVIDIA Jetson Orin NX / NANO 平台 或 VM 環境。
 
 ## 📦 部署指南 (Deployment)
@@ -8,7 +8,7 @@
 1. **取得程式碼**
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/allegroHSU/Dataset_ROS_Dev2.git
 cd Dataset_ROS_Dev2
 ```
 
