@@ -1,0 +1,19 @@
+# ROS 2 Workspace Directories
+build/
+install/
+log/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDEs
+.vscode/
+.idea/
+
+# Data Collection Bags (Most important!)
+dataset_*/
+*.db3
+*.bag
+*.mcap
