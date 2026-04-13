@@ -37,3 +37,29 @@ source install/setup.bash
 ```
 
 執行 `record_data.sh` 時，rosbag2 會使用 `mcap` storage 錄製資料，而不是預設的 `sqlite3/.db3`。
+
+## ✅ 錄完 bag 後只檢查這 3 件事
+
+1. 確認 bag 目錄已成功產生，且格式為 `mcap`：
+
+```bash
+ros2 bag info <bag_directory>
+```
+
+2. 確認影像與雷達五維點雲 topic 都有錄到：
+
+```bash
+ros2 bag info <bag_directory>
+```
+
+至少應看到：
+- `/image_raw`
+- `/ti_mmwave/radar_scan_pcl`
+
+3. 抽查回放資料，確認影像可看到人出現，且雷達點雲有隨時間正常輸出：
+
+```bash
+ros2 bag play <bag_directory>
+```
+
+錄製完成後，請同步填寫 `run_log.csv`，紀錄本次採集條件、時間與備註，避免後續對資料來源混淆。
