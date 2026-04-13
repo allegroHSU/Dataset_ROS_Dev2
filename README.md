@@ -35,3 +35,5 @@ colcon build --symlink-install
 source install/setup.bash
 ./record_data.sh
 ```
+
+執行 `record_data.sh` 時，rosbag2 會使用 `mcap` storage 錄製資料，而不是預設的 `sqlite3/.db3`。

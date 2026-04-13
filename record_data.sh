@@ -34,7 +34,7 @@ echo "-> 按 [Ctrl+C] 結束錄製"
 echo "------------------------------------------"
 
 # 執行錄影
-ros2 bag record -o $BAG_NAME \
+ros2 bag record -s mcap -o $BAG_NAME \
     /image_raw \
     /ti_mmwave/radar_scan \
     /ti_mmwave/radar_scan_pcl \
