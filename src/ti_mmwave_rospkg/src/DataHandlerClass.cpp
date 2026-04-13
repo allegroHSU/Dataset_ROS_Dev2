@@ -563,8 +563,7 @@ void *DataUARTHandler::sortIncomingData(void)
                         radarscan.y = -mmwData.newObjOut.x;
                         radarscan.z = mmwData.newObjOut.z;
                         radarscan.velocity = mmwData.newObjOut.velocity;
-                        radar_scan_pub->publish(radarscan);
-
+                        // NOTE: publish is handled below by the unified angle-filter block (L580)
                         // For SDK 3.x, intensity is replaced by snr in sideInfo and is parsed in the READ_SIDE_INFO code
                     }
 
