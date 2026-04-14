@@ -11,7 +11,7 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'video_device': '/dev/video0',  # 如果筆電有內建鏡頭，C930e 可能是 /dev/video2
-                'framerate': 30.0,
+                'framerate': 10.0,
                 'image_width': 640,
                 'image_height': 480,
                 'pixel_format': 'mjpeg2rgb',    # 使用 MJPEG 格式傳輸

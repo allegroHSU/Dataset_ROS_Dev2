@@ -63,3 +63,20 @@ ros2 bag play <bag_directory>
 ```
 
 錄製完成後，請同步填寫 `run_log.csv`，紀錄本次採集條件、時間與備註，避免後續對資料來源混淆。
+
+## 🧩 Bag 解析用法
+
+若要將錄製完成的 `mcap` bag 解析成原始表格，可執行：
+
+```bash
+python3 /home/chris/Dataset_ROS_Dev2/parse_bag_to_raw_tables.py \
+  --bag-path /home/chris/Dataset_ROS_Dev2/dataset_20260414_101911 \
+  --output-dir /home/chris/Dataset_ROS_Dev2/dataset_20260414_101911 \
+  --session-id 20260414 \
+  --run-id 101911 \
+  --radar-topic /ti_mmwave/radar_scan_pcl \
+  --image-topic /image_raw
+```
+
+其中 `--radar-topic` 應使用 RViz 顯示的點雲 topic：
+- `/ti_mmwave/radar_scan_pcl`
