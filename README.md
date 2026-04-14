@@ -38,6 +38,44 @@ source install/setup.bash
 
 執行 `record_data.sh` 時，rosbag2 會使用 `mcap` storage 錄製資料，而不是預設的 `sqlite3/.db3`。
 
+### 錄製前檢查清單
+
+若不使用容器，請先在主機上確認以下項目：
+
+1. 雷達 serial 裝置已出現：
+
+```bash
+ls -l /dev/ttyUSB* /dev/ttyACM*
+```
+
+2. 相機裝置已出現：
+
+```bash
+ls -l /dev/video*
+```
+
+3. 相依套件已安裝：
+
+```bash
+ros2 pkg list | grep '^usb_cam$'
+python3 -c "import pandas, pyarrow; print('python deps ok')"
+```
+
+4. 錄製前先確認關鍵 topic 已存在：
+
+```bash
+ros2 topic list | grep image_raw
+ros2 topic list | grep radar_scan_pcl
+```
+
+若裝置權限不足，可執行：
+
+```bash
+sudo chmod 666 /dev/ttyUSB* /dev/ttyACM* /dev/video*
+```
+
+`record_data.sh` 目前會在正式錄製前自動檢查 `/image_raw` 與 `/ti_mmwave/radar_scan_pcl`，若缺少其中任一 topic，會提示使用者中止或繼續，避免誤錄到只有半套資料的 bag。
+
 ## ✅ 錄完 bag 後只檢查這 3 件事
 
 1. 確認 bag 目錄已成功產生，且格式為 `mcap`：
@@ -69,13 +107,19 @@ ros2 bag play <bag_directory>
 若要將錄製完成的 `mcap` bag 解析成原始表格，可執行：
 
 ```bash
-python3 /home/chris/Dataset_ROS_Dev2/parse_bag_to_raw_tables.py \
-  --bag-path /home/chris/Dataset_ROS_Dev2/dataset_20260414_101911 \
-  --output-dir /home/chris/Dataset_ROS_Dev2/dataset_20260414_101911 \
+python3 ./parse_bag_to_raw_tables.py \
+  --bag-path ./dataset_20260414_101911 \
+  --output-dir ./dataset_20260414_101911 \
   --session-id 20260414 \
   --run-id 101911 \
   --radar-topic /ti_mmwave/radar_scan_pcl \
   --image-topic /image_raw
+```
+
+若執行環境尚未安裝解析依賴，請先補齊：
+
+```bash
+python3 -m pip install --user pandas pyarrow
 ```
 
 其中 `--radar-topic` 應使用 RViz 顯示的點雲 topic：
