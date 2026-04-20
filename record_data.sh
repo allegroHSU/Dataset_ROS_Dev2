@@ -1,10 +1,52 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROS_SETUP="/opt/ros/humble/setup.bash"
+WS_SETUP="${SCRIPT_DIR}/install/setup.bash"
+
 # 設定儲存資料夾名稱，加上時間戳記避免重複
 BAG_NAME="dataset_$(date +%Y%m%d_%H%M%S)"
 PID_RADAR=""
 PID_CAMERA=""
+TI_COMMAND_PORT="${TI_COMMAND_PORT:-}"
+TI_DATA_PORT="${TI_DATA_PORT:-}"
+CAMERA_DEVICE="${CAMERA_DEVICE:-/dev/video0}"
+
+pick_ti_ports() {
+  if [ -z "${TI_COMMAND_PORT}" ]; then
+    if [ -e /dev/ti_radar_command ]; then
+      TI_COMMAND_PORT="/dev/ti_radar_command"
+    else
+      TI_COMMAND_PORT="/dev/ttyUSB0"
+    fi
+  fi
+
+  if [ -z "${TI_DATA_PORT}" ]; then
+    if [ -e /dev/ti_radar_data ]; then
+      TI_DATA_PORT="/dev/ti_radar_data"
+    else
+      TI_DATA_PORT="/dev/ttyUSB1"
+    fi
+  fi
+}
+
+source_env() {
+  if [ ! -f "${ROS_SETUP}" ]; then
+    echo "-> [錯誤] 找不到 ROS 2 環境: ${ROS_SETUP}"
+    exit 1
+  fi
+
+  source "${ROS_SETUP}"
+
+  if [ ! -f "${WS_SETUP}" ]; then
+    echo "-> [錯誤] 找不到 workspace install/setup.bash: ${WS_SETUP}"
+    echo "-> [提示] 請先在 ${SCRIPT_DIR} 執行: source /opt/ros/humble/setup.bash && colcon build --symlink-install"
+    exit 1
+  fi
+
+  source "${WS_SETUP}"
+}
 
 cleanup() {
   echo "-> 正在關閉感測器..."
@@ -65,6 +107,9 @@ prompt_continue_or_abort() {
 
 trap cleanup EXIT
 
+source_env
+pick_ti_ports
+
 echo "=========================================="
 echo "   資料採集系統"
 echo "=========================================="
@@ -73,10 +118,28 @@ grant_device_permissions
 
 echo "-> 目前可見裝置:"
 ls -l /dev/ttyACM* /dev/ttyUSB* /dev/video* 2>/dev/null || true
+echo "-> TI command port: ${TI_COMMAND_PORT}"
+echo "-> TI data port:    ${TI_DATA_PORT}"
+echo "-> Camera device:   ${CAMERA_DEVICE}"
+
+if ! ros2 pkg prefix usb_cam >/dev/null 2>&1; then
+  echo "-> [錯誤] 缺少 ROS 套件 usb_cam"
+  echo "-> [建議] sudo apt install ros-humble-usb-cam"
+  exit 1
+fi
+
+if ! ros2 pkg prefix rosbag2_storage_mcap >/dev/null 2>&1; then
+  echo "-> [錯誤] 缺少 rosbag2 mcap storage plugin"
+  echo "-> [建議] sudo apt install ros-humble-rosbag2-storage-mcap"
+  exit 1
+fi
 
 # 1. 啟動雷達
 echo "-> 正在啟動雷達 (無 Rviz 模式)..."
-ros2 launch ti_mmwave_rospkg 6843AOP_StaticTracking.py &
+ros2 launch ti_mmwave_rospkg 6843AOP_StaticTracking.py \
+  command_port:="${TI_COMMAND_PORT}" \
+  data_port:="${TI_DATA_PORT}" \
+  rviz:=false &
 PID_RADAR=$!
 
 echo "-> 等待雷達穩定 (10 秒)..."
@@ -84,7 +147,7 @@ sleep 10
 
 # 2. 啟動攝影機
 echo "-> 正在啟動攝影機..."
-ros2 launch sensor_fusion_pkg camera.launch.py &
+ros2 launch sensor_fusion_pkg camera.launch.py video_device:="${CAMERA_DEVICE}" &
 PID_CAMERA=$!
 
 echo "-> 等待攝影機穩定 (5 秒)..."

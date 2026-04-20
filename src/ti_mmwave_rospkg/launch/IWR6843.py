@@ -16,12 +16,12 @@ def generate_launch_description():
 
     command_port_arg = DeclareLaunchArgument(
         'command_port',
-        default_value='/dev/ttyUSB0'
+        default_value='/dev/ti_radar_command'
     )
 
     data_port_arg = DeclareLaunchArgument(
         'data_port',
-        default_value='/dev/ttyUSB1'
+        default_value='/dev/ti_radar_data'
     )
 
     rviz_arg = DeclareLaunchArgument(
@@ -45,12 +45,7 @@ def generate_launch_description():
     data_port = LaunchConfiguration("data_port")
     data_rate = "921600"
 
-    ConfigParameters = os.path.join(
-        my_package_dir,
-        'config',
-        'global_params.yaml',
-        'launch/*.rviz'
-    )
+    ConfigParameters = os.path.join(my_package_dir, 'config', 'global_params.yaml')
     global_param_node = Node(
         package='ti_mmwave_rospkg',
         executable='ConfigParameterServer',

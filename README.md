@@ -36,6 +36,12 @@ source install/setup.bash
 ./record_data.sh
 ```
 
+若本機裝置號不同，可在啟動時覆寫：
+
+```bash
+TI_COMMAND_PORT=/dev/ttyUSB0 TI_DATA_PORT=/dev/ttyUSB1 CAMERA_DEVICE=/dev/video2 ./record_data.sh
+```
+
 執行 `record_data.sh` 時，rosbag2 會使用 `mcap` storage 錄製資料，而不是預設的 `sqlite3/.db3`。
 
 ### 錄製前檢查清單
@@ -58,6 +64,7 @@ ls -l /dev/video*
 
 ```bash
 ros2 pkg list | grep '^usb_cam$'
+ros2 pkg list | grep '^rosbag2_storage_mcap$'
 python3 -c "import pandas, pyarrow; print('python deps ok')"
 ```
 
