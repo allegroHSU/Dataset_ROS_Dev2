@@ -17,7 +17,7 @@ def generate_launch_description():
     iwr6843_include = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(package_dir,'launch','IWR6843.py')),
         launch_arguments={
-            "cfg_file": '6843AOP_StaticTracking.cfg',
+            "cfg_file": 'Pentrating_V1_safe_breathing_fov.cfg',
             "command_port": LaunchConfiguration('command_port'),
             "data_port": LaunchConfiguration('data_port'),
             "rviz": LaunchConfiguration('rviz'),
