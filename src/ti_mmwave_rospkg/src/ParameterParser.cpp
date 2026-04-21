@@ -54,7 +54,6 @@ public:
         auto result = future.get();
         auto param = result.at(0);
         //RCLCPP_INFO(this->get_logger(), "Got global param: %s", param.as_string().c_str());
-        rclcpp::shutdown();
     }
 
 private:
