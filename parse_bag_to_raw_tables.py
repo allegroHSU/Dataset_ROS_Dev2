@@ -17,13 +17,23 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
+try:
+    import cv2  # type: ignore
+    import numpy as np
+    CV2_AVAILABLE = True
+except Exception:
+    CV2_AVAILABLE = False
+
 
 @dataclass
 class ParseConfig:
-    radar_topic: str = "/ti_mmwave/radar_points"
+    radar_topic: str = "/ti_mmwave/radar_scan_pcl"
     image_topic: str = "/camera/color/image_raw"
     sync_ok_threshold_ms: float = 50.0
     missing_image_threshold_frames: int = 3
+    camera_fps: float = 30.0
+    extract_video: bool = True
+    video_fps: float = 30.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,6 +51,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", required=True, help="Dataset run id.")
     parser.add_argument("--radar-topic", default=ParseConfig.radar_topic)
     parser.add_argument("--image-topic", default=ParseConfig.image_topic)
+    parser.add_argument(
+        "--camera-fps",
+        type=float,
+        default=ParseConfig.camera_fps,
+        help="Actual camera FPS used to determine image-missing thresholds.",
+    )
+    parser.add_argument("--video-fps", type=float, default=ParseConfig.video_fps, help="FPS for extracted video")
+    parser.add_argument(
+        "--no-video",
+        action="store_true",
+        help="Disable automatic mp4 video extraction even if cv2 is installed",
+    )
     parser.add_argument(
         "--metadata-only",
         action="store_true",
@@ -84,6 +106,11 @@ def infer_storage_id(bag_path: Path, files: Dict[str, Optional[Path]], metadata_
         return "mcap"
     if files.get("sqlite_db") is not None:
         return "sqlite3"
+    print(
+        "[WARNING] infer_storage_id: 無法從 metadata.yaml、bag 副檔名或目錄內容判定 storage_id。"
+        " 將以空字串傳入 rosbag2_py.StorageOptions，可能導致解析失敗。"
+        " 請確認 bag 目錄內含有 .mcap 或 .db3 檔案，或 metadata.yaml 內有 storage_identifier 欄位。"
+    )
     return ""
 
 
@@ -281,7 +308,7 @@ def detect_decoder_support() -> Dict[str, Any]:
 
     return {
         "rosbag2_py_available": rosbag2_available,
-        "decoder_status": "available_but_not_implemented",
+        "decoder_status": "available_for_decode",
         "decoder_note": (
             "rosbag2_py is importable and message deserialization can be attempted when the "
             "runtime provides the required ROS2 Python packages."
@@ -354,7 +381,7 @@ def decode_point_cloud_rows(msg: Any, point_cloud2_module: Any) -> List[Dict[str
         x = first_present(raw, ["x"])
         y = first_present(raw, ["y"])
         z = first_present(raw, ["z"])
-        snr = first_present(raw, ["snr", "SNR"])
+        snr = first_present(raw, ["snr", "SNR", "intensity"])
         doppler = first_present(raw, ["doppler", "velocity", "vel", "v"])
         intensity = first_present(raw, ["intensity", "reflectivity", "power"])
         rng, azimuth, elevation = compute_range_azimuth_elevation(x, y, z)
@@ -374,12 +401,48 @@ def decode_point_cloud_rows(msg: Any, point_cloud2_module: Any) -> List[Dict[str
     return rows
 
 
+def decode_image_to_bgr(msg: Any) -> "np.ndarray":
+    width = int(msg.width)
+    height = int(msg.height)
+    encoding = str(getattr(msg, "encoding", "")).lower()
+    data = np.frombuffer(msg.data, dtype=np.uint8)
+
+    if encoding in {"bgr8", "rgb8"}:
+        img = data.reshape((height, width, 3))
+        if encoding == "rgb8":
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        return img
+
+    if encoding in {"bgra8", "rgba8"}:
+        img = data.reshape((height, width, 4))
+        code = cv2.COLOR_BGRA2BGR if encoding == "bgra8" else cv2.COLOR_RGBA2BGR
+        return cv2.cvtColor(img, code)
+
+    if encoding in {"mono8", "8uc1"}:
+        img = data.reshape((height, width))
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    if encoding in {"mono16", "16uc1"}:
+        img16 = np.frombuffer(msg.data, dtype=np.uint16).reshape((height, width))
+        img8 = cv2.convertScaleAbs(img16, alpha=(255.0 / 65535.0))
+        return cv2.cvtColor(img8, cv2.COLOR_GRAY2BGR)
+
+    raise ValueError(f"Unsupported image encoding for video export: {encoding or '<empty>'}")
+
+
 def classify_sync_quality(delta_ms: float, cfg: ParseConfig) -> str:
     if math.isnan(delta_ms):
         return "missing_image"
+
+    camera_interval_ms = 1000.0 / cfg.camera_fps if cfg.camera_fps > 0 else 33.3
+    missing_threshold_ms = cfg.missing_image_threshold_frames * camera_interval_ms
+    
     if abs(delta_ms) <= cfg.sync_ok_threshold_ms:
         return "ok"
-    return "loose"
+    elif abs(delta_ms) <= missing_threshold_ms:
+        return "sync_uncertain"
+    else:
+        return "missing_image"
 
 
 def attach_image_alignment(frame_df: pd.DataFrame, image_stamps_ns: Sequence[int], cfg: ParseConfig) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -420,6 +483,7 @@ def decode_rosbag_topics(
     metadata_info: Dict[str, Any],
     session_id: str,
     run_id: str,
+    output_dir: Path,
     cfg: ParseConfig,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     runtime = try_import_rosbag_runtime()
@@ -466,51 +530,78 @@ def decode_rosbag_topics(
     point_rows: List[Dict[str, Any]] = []
     image_stamps_ns: List[int] = []
     first_radar_ns: Optional[int] = None
-    frame_index = 0
+    frame_index = 1
 
-    while reader.has_next():
-        topic_name, raw_data, bag_timestamp_ns = reader.read_next()
-        if topic_name == cfg.image_topic and image_msg_type is not None:
-            image_msg = deserialize_message(raw_data, image_msg_type)
-            image_stamps_ns.append(get_message_stamp_ns(image_msg, bag_timestamp_ns))
-            continue
+    video_writer = None
+    output_video_path = output_dir / "run_video.mp4"
+    if cfg.extract_video and CV2_AVAILABLE:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        if topic_name != cfg.radar_topic:
-            continue
+    try:
+        while reader.has_next():
+            topic_name, raw_data, bag_timestamp_ns = reader.read_next()
+            if topic_name == cfg.image_topic and image_msg_type is not None:
+                image_msg = deserialize_message(raw_data, image_msg_type)
+                image_stamps_ns.append(get_message_stamp_ns(image_msg, bag_timestamp_ns))
+                
+                if cfg.extract_video and CV2_AVAILABLE:
+                    width = int(image_msg.width)
+                    height = int(image_msg.height)
+                    try:
+                        img_array = decode_image_to_bgr(image_msg)
+                    except Exception:
+                        continue
 
-        radar_msg = deserialize_message(raw_data, radar_msg_type)
-        radar_stamp_ns = get_message_stamp_ns(radar_msg, bag_timestamp_ns)
-        if first_radar_ns is None:
-            first_radar_ns = radar_stamp_ns
+                    if video_writer is None:
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v') # type: ignore
+                        video_writer = cv2.VideoWriter(str(output_video_path), fourcc, cfg.video_fps, (width, height))
 
-        decoded_points = decode_point_cloud_rows(radar_msg, point_cloud2_module)
-        frame_uid = f"{session_id}_{run_id}_f{frame_index:06d}"
-        radar_stamp_s = radar_stamp_ns / 1_000_000_000.0
-        frame_relative_time_s = (
-            (radar_stamp_ns - first_radar_ns) / 1_000_000_000.0 if first_radar_ns is not None else 0.0
-        )
+                    video_writer.write(img_array)
+                continue
 
-        frame_rows.append(
-            {
-                "frame_uid": frame_uid,
-                "session_id": session_id,
-                "run_id": run_id,
-                "frame_id": frame_index,
-                "radar_stamp_s": radar_stamp_s,
-                "frame_relative_time_s": frame_relative_time_s,
-                "matched_image_stamp_s": math.nan,
-                "delta_ms": math.nan,
-                "sync_quality": "missing_image",
-                "num_points": len(decoded_points),
-                "is_drop_frame": False,
-                "notes": "",
-            }
-        )
+            if topic_name != cfg.radar_topic:
+                continue
 
-        for point_id, point in enumerate(decoded_points):
-            point_rows.append({"frame_uid": frame_uid, "point_id": point_id, **point})
+            radar_msg = deserialize_message(raw_data, radar_msg_type)
+            radar_stamp_ns = get_message_stamp_ns(radar_msg, bag_timestamp_ns)
+            if first_radar_ns is None:
+                first_radar_ns = radar_stamp_ns
 
-        frame_index += 1
+            decoded_points = decode_point_cloud_rows(radar_msg, point_cloud2_module)
+            frame_uid = f"{session_id}_{run_id}_f{frame_index:06d}"
+            radar_stamp_s = radar_stamp_ns / 1_000_000_000.0
+            frame_relative_time_s = (
+                (radar_stamp_ns - first_radar_ns) / 1_000_000_000.0 if first_radar_ns is not None else 0.0
+            )
+
+            # NOTE: is_drop_frame is always False in the current implementation.
+            # UART / CRC / packet-loss drop detection is not yet implemented.
+            # All downstream QC logic that relies on drop_frame_count / drop_ratio
+            # (e.g. quality_flag = radar_dropout) will see 0 drops until this is added.
+            frame_rows.append(
+                {
+                    "frame_uid": frame_uid,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "frame_id": frame_index,
+                    "radar_stamp_s": radar_stamp_s,
+                    "frame_relative_time_s": frame_relative_time_s,
+                    "matched_image_stamp_s": math.nan,
+                    "delta_ms": math.nan,
+                    "sync_quality": "missing_image",
+                    "num_points": len(decoded_points),
+                    "is_drop_frame": False,
+                    "notes": "",
+                }
+            )
+
+            for point_id, point in enumerate(decoded_points):
+                point_rows.append({"frame_uid": frame_uid, "point_id": point_id, **point})
+
+            frame_index += 1
+    finally:
+        if video_writer is not None:
+            video_writer.release()
 
     frame_df = pd.DataFrame(frame_rows, columns=build_empty_frame_table().columns)
     points_df = pd.DataFrame(point_rows, columns=build_empty_points_table().columns)
@@ -524,7 +615,17 @@ def decode_rosbag_topics(
         "image_topic_type": image_type,
         "radar_frames_decoded": int(len(frame_df)),
         "image_messages_seen": int(len(image_stamps_ns)),
+        "is_drop_frame_implemented": False,
+        "is_drop_frame_note": (
+            "Drop-frame detection (UART/CRC/packet-loss) is not yet implemented. "
+            "All frames are exported with is_drop_frame=False. "
+            "Downstream drop_frame_count and drop_ratio will reflect 0 drops."
+        ),
     }
+            
+    if cfg.extract_video and not CV2_AVAILABLE:
+        decoder_info["decoder_note"] += " (Video extraction skipped: opencv-python not installed)"
+        
     return frame_df, points_df, align_df, decoder_info
 
 
@@ -554,6 +655,26 @@ def build_report(
 ) -> Dict[str, Any]:
     duration_ns = metadata_info.get("duration", {}).get("nanoseconds") if isinstance(metadata_info.get("duration"), dict) else None
     start_ns = metadata_info.get("starting_time", {}).get("nanoseconds_since_epoch") if isinstance(metadata_info.get("starting_time"), dict) else None
+    decoder_status = str(decoder_info.get("decoder_status", "unknown"))
+
+    if decoder_status == "decoded":
+        status = "decoded_raw_tables_exported"
+        note = (
+            "Raw tables, topic summary, parser report, and optional run_video.mp4 were exported "
+            "from ROS2 bag topics successfully."
+        )
+    elif decoder_status in {"runtime_import_failed", "radar_topic_not_found"}:
+        status = "metadata_and_schema_export_only"
+        note = (
+            "Raw-table decoding was not completed. The parser exported schemas, topic summary, "
+            "and parser report for diagnostics."
+        )
+    else:
+        status = "metadata_and_schema_export_only"
+        note = (
+            "Formal raw-table schemas, topic summary, and parser report were created. "
+            "Topic/message decoding was skipped or is not available in the current runtime."
+        )
 
     return {
         "bag_path": str(bag_path),
@@ -567,11 +688,8 @@ def build_report(
         "message_count": metadata_info.get("message_count"),
         "topics_discovered": topic_df.to_dict(orient="records"),
         "decoder": decoder_info,
-        "status": "metadata_and_schema_export_only",
-        "note": (
-            "Formal raw-table schemas, topic summary, and parser report were created. "
-            "Topic/message deserialization is the next implementation step."
-        ),
+        "status": status,
+        "note": note,
     }
 
 
@@ -584,7 +702,13 @@ def write_parser_report(output_dir: Path, report: Dict[str, Any]) -> None:
 
 def main() -> None:
     args = parse_args()
-    cfg = ParseConfig(radar_topic=args.radar_topic, image_topic=args.image_topic)
+    cfg = ParseConfig(
+        radar_topic=args.radar_topic, 
+        image_topic=args.image_topic,
+        camera_fps=args.camera_fps,
+        extract_video=not args.no_video,
+        video_fps=args.video_fps
+    )
     ensure_bag_path(args.bag_path)
 
     files = discover_rosbag2_files(args.bag_path)
@@ -605,6 +729,7 @@ def main() -> None:
             metadata_info=metadata_info,
             session_id=args.session_id,
             run_id=args.run_id,
+            output_dir=args.output_dir,
             cfg=cfg,
         )
 
@@ -621,7 +746,7 @@ def main() -> None:
     )
     write_parser_report(args.output_dir, report)
 
-    print("Wrote raw-table schemas, topic_summary.csv, and parse_bag_to_raw_tables_report.json.")
+    print("Wrote frame_table.parquet, points_table.parquet, image_alignment_table.csv, topic_summary.csv, and parse_bag_to_raw_tables_report.json.")
     if args.metadata_only:
         print("Metadata-only mode requested; topic/message decoding was skipped.")
     else:
