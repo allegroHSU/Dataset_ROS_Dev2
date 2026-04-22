@@ -121,6 +121,46 @@ void *DataUARTHandler::readIncomingData(void)
     /*Open UART Port and error checking*/
     serial::Serial mySerialObject("", dataBaudRate, serial::Timeout::simpleTimeout(10000));
     mySerialObject.setPort(dataSerialPort);
+
+    auto reopen_data_port = [&mySerialObject, this]() -> bool
+    {
+        try
+        {
+            if (mySerialObject.isOpen())
+            {
+                mySerialObject.close();
+            }
+        }
+        catch (std::exception &)
+        {
+        }
+
+        while (rclcpp::ok() && !stop_threads)
+        {
+            try
+            {
+                mySerialObject.open();
+                if (mySerialObject.isOpen())
+                {
+                    RCLCPP_WARN(rclcpp::get_logger("rclcpp"),
+                                "DataUARTHandler Read Thread: Reopened data serial port: %s",
+                                dataSerialPort);
+                    return true;
+                }
+            }
+            catch (std::exception &e)
+            {
+                RCLCPP_WARN(rclcpp::get_logger("rclcpp"),
+                            "DataUARTHandler Read Thread: Reopen failed for %s: %s",
+                            dataSerialPort, e.what());
+            }
+
+            rclcpp::sleep_for(std::chrono::seconds(1));
+        }
+
+        return false;
+    };
+
     while(!mySerialObject.isOpen())
     {
         try
@@ -160,7 +200,22 @@ void *DataUARTHandler::readIncomingData(void)
         last8Bytes[4] = last8Bytes[5];
         last8Bytes[5] = last8Bytes[6];
         last8Bytes[6] = last8Bytes[7];
-        mySerialObject.read(&last8Bytes[7], 1);
+        try
+        {
+            mySerialObject.read(&last8Bytes[7], 1);
+        }
+        catch (std::exception &e)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("rclcpp"),
+                        "DataUARTHandler Read Thread: Serial read failed during sync on %s: %s",
+                        dataSerialPort, e.what());
+            if (!reopen_data_port())
+            {
+                pthread_exit(NULL);
+            }
+            memset(last8Bytes, 0, sizeof(last8Bytes));
+            continue;
+        }
     }
 
     /*Lock nextBufp before entering main loop*/
@@ -177,7 +232,22 @@ void *DataUARTHandler::readIncomingData(void)
         last8Bytes[5] = last8Bytes[6];
         last8Bytes[6] = last8Bytes[7];
 
-        mySerialObject.read(&last8Bytes[7], 1);
+        try
+        {
+            mySerialObject.read(&last8Bytes[7], 1);
+        }
+        catch (std::exception &e)
+        {
+            RCLCPP_WARN(rclcpp::get_logger("rclcpp"),
+                        "DataUARTHandler Read Thread: Serial read failed on %s: %s",
+                        dataSerialPort, e.what());
+            if (!reopen_data_port())
+            {
+                break;
+            }
+            memset(last8Bytes, 0, sizeof(last8Bytes));
+            continue;
+        }
 
         //RCLCPP_INFO(rclcpp::get_logger("rclcpp"),"DataUARTHandler Read Thread: last8bytes = %02x%02x %02x%02x %02x%02x %02x%02x",  last8Bytes[7], last8Bytes[6], last8Bytes[5], last8Bytes[4], last8Bytes[3], last8Bytes[2], last8Bytes[1], last8Bytes[0]);
 
@@ -219,7 +289,10 @@ void *DataUARTHandler::readIncomingData(void)
         }
     }
 
-    mySerialObject.close();
+    if (mySerialObject.isOpen())
+    {
+        mySerialObject.close();
+    }
     pthread_exit(NULL);
 }
 
